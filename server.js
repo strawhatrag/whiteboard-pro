@@ -14,8 +14,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-
-// Serve static frontend from /public
 app.use(express.static(path.join(__dirname, "public")));
 
 // ==========================
@@ -27,8 +25,15 @@ const REDIS_URL = `redis://${REDIS_HOST}:6379`;
 const pubClient = createClient({ url: REDIS_URL });
 const subClient = pubClient.duplicate();
 
+// Use a simple client for command execution (needed for PUBLISH/SUBSCRIBE)
+const commandClient = pubClient.duplicate();
+
 try {
-  await Promise.all([pubClient.connect(), subClient.connect()]);
+  await Promise.all([
+    pubClient.connect(),
+    subClient.connect(),
+    commandClient.connect(),
+  ]);
   console.log("✅ Connected to Redis at", REDIS_HOST);
 } catch (error) {
   console.error("❌ Failed to connect to Redis:", error.message);
@@ -36,13 +41,42 @@ try {
 }
 
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: { origin: "*", methods: ["GET", "POST"] },
 });
-// CRITICAL: Apply the Redis adapter to synchronize all app nodes
 io.adapter(createAdapter(pubClient, subClient));
+
+// ==========================
+// BOARD STATE IN MEMORY (TEMPORARY/SIMPLE CACHE)
+// ==========================
+// WARNING: This array holds the board state. It requires synchronization via Redis Pub/Sub.
+let strokes = [];
+// each item: { x, y, color, userId }
+
+// ==========================
+// REDIS → SOCKET BROADCAST (The synchronization engine)
+// ==========================
+subClient.subscribe("whiteboard-events", (message) => {
+  const msg = JSON.parse(message);
+
+  if (msg.type === "draw") {
+    strokes.push(msg.data);
+    io.emit("draw", msg.data);
+  }
+
+  if (msg.type === "clear-all") {
+    strokes = [];
+    io.emit("clear-all");
+  }
+
+  if (msg.type === "clear-user") {
+    const targetUser = msg.userId;
+    // Filter out the strokes from the target user
+    strokes = strokes.filter((s) => s.userId !== targetUser);
+
+    // Tell all clients to fully redraw the filtered state
+    io.emit("reset-board", strokes);
+  }
+});
 
 // ==========================
 // SOCKET.IO USER HANDLING
@@ -55,31 +89,39 @@ io.on("connection", (socket) => {
   // 1. Client sends its session userId
   socket.on("register", (data) => {
     userId = data?.userId || socket.id.slice(0, 5).toUpperCase();
+
     console.log("👤 User registered:", socket.id, "userId:", userId);
 
-    // Send back user info immediately to update the client's label
+    // Send back user info & the current board state
     socket.emit("user-info", { userId });
-
-    // NOTE: No 'init-board' call because state is not stored in memory.
+    socket.emit("init-board", strokes);
   });
 
-  // 2. DRAW EVENT: Broadcasts drawing data to everyone else
+  // 2. DRAW EVENT: Publish to Redis (Server A draws, Server B, C subscribes)
   socket.on("draw", (data) => {
-    // Broadcast the drawing to everyone *except* the sender.
-    // The sender draws the point locally for zero latency.
-    socket.broadcast.emit("draw", data);
+    const withUser = { ...data, userId };
+
+    // Use Redis PUBLISH to send the stroke data to all other nodes
+    commandClient.publish(
+      "whiteboard-events",
+      JSON.stringify({ type: "draw", data: withUser })
+    );
   });
 
   // 3. CLEAR ALL EVENT
   socket.on("clear-all", () => {
-    io.emit("clear-all");
+    commandClient.publish(
+      "whiteboard-events",
+      JSON.stringify({ type: "clear-all" })
+    );
   });
 
   // 4. CLEAR ONLY MY STROKES
   socket.on("clear-mine", () => {
-    // In a stateless design, this serves as a broadcast command
-    // that a user wants to clear their strokes.
-    io.emit("clear-user-broadcast", { userId });
+    commandClient.publish(
+      "whiteboard-events",
+      JSON.stringify({ type: "clear-user", userId })
+    );
   });
 
   socket.on("disconnect", () => {
