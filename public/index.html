@@ -1,185 +1,120 @@
-<!DOCTYPE html>
-<html>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const socket = io({
+    // Forces a clean WebSocket connection for better stability
+    transports: ['websocket']
+  });
 
-<head>
-  <title>Distributed Whiteboard</title>
-  <style>
-    body {
-      margin: 0;
-      background: #f4f6f9;
-      font-family: "Segoe UI", Arial, sans-serif;
-      overflow: hidden;
+  const colorPicker = document.getElementById("colorPicker");
+  const clearMineBtn = document.getElementById("clearMineBtn");
+  const clearAllBtn = document.getElementById("clearAllBtn");
+  const userLabel = document.getElementById("userLabel");
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resizeCanvas();
+  window.addEventListener("resize", resizeCanvas);
+
+  let drawing = false;
+  let color = colorPicker.value;
+  let myUserId = null; // Store the ID received from the server
+
+  // Tracks which users have been 'cleared' by the clear-mine button
+  // (This is a temporary, client-side only array)
+  let clearedUsers = new Set();
+
+  // ===== SESSION USER ID (PER TAB) =====
+  myUserId = sessionStorage.getItem("whiteboardSessionUserId");
+  if (!myUserId) {
+    myUserId = Math.random().toString(36).substring(2, 7).toUpperCase();
+    sessionStorage.setItem("whiteboardSessionUserId", myUserId);
+  }
+
+  // --- REGISTRATION ---
+  socket.emit("register", { userId: myUserId });
+
+  // Server sends back confirmation
+  socket.on("user-info", (info) => {
+    myUserId = info.userId;
+    userLabel.textContent = `You: ${myUserId}`; // Should update immediately now
+  });
+
+  // NOTE: 'init-board' event is removed here as we removed the state array.
+
+  colorPicker.addEventListener("change", (e) => {
+    color = e.target.value;
+  });
+
+  // ✅ CLEAR ONLY MY STROKES (Client-side clear for this session)
+  clearMineBtn.addEventListener("click", () => {
+    // In a stateless environment, we can't truly clear past strokes without 
+    // a persistent state, but we can prevent future strokes from being drawn.
+    // For now, we clear the entire canvas and rely on a stateful server
+    // to eventually resync, but since we removed state, we just trigger the 
+    // broadcast and clear the local canvas.
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    socket.emit("clear-mine");
+    // Mark myself as 'cleared'
+    clearedUsers.add(myUserId);
+  });
+
+  // ✅ CLEAR EVERYONE
+  clearAllBtn.addEventListener("click", () => {
+    socket.emit("clear-all");
+    clearedUsers.clear(); // Reset cleared users list
+  });
+
+  // --- DRAWING LISTENERS ---
+  canvas.addEventListener("mousedown", () => (drawing = true));
+  canvas.addEventListener("mouseup", () => (drawing = false));
+  canvas.addEventListener("mouseleave", () => (drawing = false));
+  canvas.addEventListener("mousemove", draw);
+
+  function draw(e) {
+    if (!drawing) return;
+
+    const x = e.clientX;
+    const y = e.clientY;
+
+    const data = { x, y, color, userId: myUserId };
+
+    // 1. Draw LOCALLY first for zero-latency feedback
+    drawPoint(x, y, color);
+
+    // 2. Send draw data to the server for broadcast to others
+    socket.emit("draw", data);
+  }
+
+  // --- SERVER EVENTS ---
+
+  // Received draw events from OTHER users
+  socket.on("draw", (data) => {
+    // Prevent drawing if this user was recently "cleared" locally
+    if (clearedUsers.has(data.userId)) {
+      return;
     }
+    drawPoint(data.x, data.y, data.color);
+  });
 
-    canvas {
-      background-color: #ffffff;
-      background-image:
-        linear-gradient(#e5e7eb 1px, transparent 1px),
-        linear-gradient(90deg, #e5e7eb 1px, transparent 1px);
-      background-size: 40px 40px;
-      display: block;
-      cursor: crosshair;
-    }
+  // Server tells all clients to clear the canvas
+  socket.on("clear-all", () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  });
 
-    #toolbar {
-      position: fixed;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(255, 255, 255, 0.9);
-      backdrop-filter: blur(12px);
-      padding: 12px 20px;
-      border-radius: 16px;
-      display: flex;
-      gap: 12px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
-      z-index: 10;
-      align-items: center;
-    }
+  // Server tells everyone a specific user was cleared (mostly for logging/debug)
+  socket.on("clear-user-broadcast", (data) => {
+    console.log(`User ${data.userId} cleared their strokes.`);
+    // Note: The client cannot actually clear past strokes without state.
+  });
 
-    #toolbar button {
-      background: #111827;
-      color: white;
-      border: none;
-      padding: 10px 14px;
-      border-radius: 10px;
-      font-size: 14px;
-      cursor: pointer;
-      transition: 0.2s;
-    }
-
-    #toolbar button:hover {
-      background: #374151;
-    }
-
-    #toolbar input[type="color"] {
-      width: 38px;
-      height: 38px;
-      border-radius: 50%;
-      border: none;
-      cursor: pointer;
-    }
-
-    #userLabel {
-      font-size: 14px;
-      color: #111827;
-      font-weight: 500;
-    }
-  </style>
-</head>
-
-<body>
-
-  <div id="toolbar">
-    <span id="userLabel">You: ...</span>
-    <input type="color" id="colorPicker" value="#000000">
-    <button id="clearMineBtn">Clear Mine</button>
-    <button id="clearAllBtn">Clear All</button>
-  </div>
-
-  <canvas id="board"></canvas>
-
-  <script src="/socket.io/socket.io.js"></script>
-
-  <script>
-    const canvas = document.getElementById("board");
-    const ctx = canvas.getContext("2d");
-    const socket = io(); // Connects to the server (NGINX Load Balancer)
-
-    const colorPicker = document.getElementById("colorPicker");
-    const clearMineBtn = document.getElementById("clearMineBtn");
-    const clearAllBtn = document.getElementById("clearAllBtn");
-    const userLabel = document.getElementById("userLabel");
-
-    function resizeCanvas() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    }
-    resizeCanvas();
-    window.addEventListener("resize", resizeCanvas);
-
-    let drawing = false;
-    let color = colorPicker.value;
-
-    // ===== SESSION USER ID (PER TAB) =====
-    let userId = sessionStorage.getItem("whiteboardSessionUserId");
-    if (!userId) {
-      userId = Math.random().toString(36).substring(2, 7).toUpperCase();
-      sessionStorage.setItem("whiteboardSessionUserId", userId);
-    }
-
-    // Send the generated or saved userId to the server
-    socket.emit("register", { userId });
-
-    // Server sends back confirmation and the final userId
-    socket.on("user-info", (info) => {
-      userLabel.textContent = `You: ${info.userId}`;
-    });
-
-    // Server sends the initial board state
-    socket.on("init-board", (strokes) => {
-      strokes.forEach((s) => drawPoint(s.x, s.y, s.color));
-    });
-
-    colorPicker.addEventListener("change", (e) => {
-      color = e.target.value;
-    });
-
-    // ✅ CLEAR ONLY MY STROKES
-    clearMineBtn.addEventListener("click", () => {
-      socket.emit("clear-mine");
-    });
-
-    // ✅ CLEAR EVERYONE
-    clearAllBtn.addEventListener("click", () => {
-      socket.emit("clear-all");
-    });
-
-    canvas.addEventListener("mousedown", () => (drawing = true));
-    canvas.addEventListener("mouseup", () => (drawing = false));
-    canvas.addEventListener("mouseleave", () => (drawing = false));
-    canvas.addEventListener("mousemove", draw);
-
-    function draw(e) {
-      if (!drawing) return;
-
-      // Get mouse position relative to the viewport
-      const x = e.clientX;
-      const y = e.clientY;
-
-      const data = { x, y, color };
-
-      // Send draw data to the server
-      socket.emit("draw", data);
-      // Draw locally immediately for better perceived performance
-      drawPoint(x, y, color);
-    }
-
-    // Server receives draw events from other users
-    socket.on("draw", (data) => {
-      drawPoint(data.x, data.y, data.color);
-    });
-
-    // Server tells all clients to clear the canvas
-    socket.on("clear-all", () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    });
-
-    // Server tells everyone to fully redraw after one user clears theirs
-    socket.on("reset-board", (strokes) => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      strokes.forEach((s) => drawPoint(s.x, s.y, s.color));
-    });
-
-    function drawPoint(x, y, color) {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      // Simple circle dot
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  </script>
-
-</body>
-
-</html>
+  function drawPoint(x, y, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+</script>
