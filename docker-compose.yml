@@ -2,33 +2,39 @@ version: "3.9"
 
 services:
   # 1. THE LOAD BALANCER / ENTRY POINT
+  # Clients connect to this service on port 80.
   nginx:
     image: nginx:latest
     container_name: nginx-lb
     ports:
       - "80:80" # Exposed port to the outside world
     volumes:
+      # Mount the NGINX config file to override the default settings
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
+      # Ensure the apps are up before the load balancer starts routing
       - app1
       - app2
       - app3
 
   # 2. THE MESSAGE BROKER / STATE SYNCHRONIZER
+  # Used by the Socket.IO Redis Adapter to sync events across app nodes.
   redis:
     image: redis:7-alpine
     container_name: redis
-    # No need to expose port 6379 to host, only the apps need it
+    # Port 6379 is not exposed to the host, as only the app containers need to talk to it.
 
-  # 3. NODE.JS APPLICATION NODES (THE WHITEBOARD SERVERS)
+  # 3. NODE.JS APPLICATION NODES (The Whiteboard Servers)
+  # Three identical instances running the server.js code.
   app1:
-    build: .
+    build: . # Build from the local Dockerfile
     container_name: whiteboard-app-1
     environment:
-      - REDIS_HOST=redis # Connects to the Redis service name
+      # This hostname resolves to the 'redis' service inside the Docker network
+      - REDIS_HOST=redis
     depends_on:
       - redis
-    # Internal port only, NGINX handles external traffic
+    # Expose port 3000 internally so NGINX can reach it.
     expose:
       - "3000"
 
@@ -53,17 +59,18 @@ services:
       - "3000"
 
   # 4. MONITORING TOOL
+  # cAdvisor provides resource usage statistics for all containers.
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
     ports:
       - "8080:8080" # Access the cAdvisor UI on host:8080
     volumes:
+      # Required volumes for cAdvisor to inspect the Docker host and containers
       - /:/rootfs:ro
       - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
     privileged: true
-    # Run cAdvisor outside the network if running on host/EC2 for full system view
-    # For simplicity, we keep it in the Docker Compose file
-    # Ensure this is allowed by your AWS Security Group.
+    # Restart policy is useful if the monitoring container crashes
+    restart: always
