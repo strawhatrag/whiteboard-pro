@@ -15,6 +15,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 
+// Serve static frontend from /public
 app.use(express.static(path.join(__dirname, "public")));
 
 // ==========================
@@ -31,17 +32,16 @@ try {
   console.log("✅ Connected to Redis at", REDIS_HOST);
 } catch (error) {
   console.error("❌ Failed to connect to Redis:", error.message);
-  // Exit if Redis connection is critical for operation
   process.exit(1);
 }
 
 const io = new Server(server, {
-  // Add cors options to prevent potential connection issues during development
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
   },
 });
+// CRITICAL: Apply the Redis adapter to synchronize all app nodes
 io.adapter(createAdapter(pubClient, subClient));
 
 // ==========================
@@ -60,32 +60,25 @@ io.on("connection", (socket) => {
     // Send back user info immediately to update the client's label
     socket.emit("user-info", { userId });
 
-    // --- STATE OMISSION ---
-    // We omit 'init-board' here. In a production app, you'd load state from a
-    // persistent database (like a Redis list or PostgreSQL) here, not memory.
+    // NOTE: No 'init-board' call because state is not stored in memory.
   });
 
   // 2. DRAW EVENT: Broadcasts drawing data to everyone else
   socket.on("draw", (data) => {
-    // Broadcast the drawing to every other connected client (across all nodes)
-    // The sender (client) already drew the point locally.
+    // Broadcast the drawing to everyone *except* the sender.
+    // The sender draws the point locally for zero latency.
     socket.broadcast.emit("draw", data);
   });
 
   // 3. CLEAR ALL EVENT
   socket.on("clear-all", () => {
-    // Broadcast to all clients (across all nodes)
     io.emit("clear-all");
-
-    // NOTE: In a production app, you would also clear the persistent database here.
   });
 
-  // 4. CLEAR ONLY MY STROKES (Requires client side logic in the absence of state)
+  // 4. CLEAR ONLY MY STROKES
   socket.on("clear-mine", () => {
-    // Since the server doesn't track strokes, we just broadcast the command
-    // for everyone else to ignore strokes coming from this user ID.
-    // This is a placeholder for a stateful cleanup. For a clean, stateless
-    // approach, this button may need to be handled client-side or removed.
+    // In a stateless design, this serves as a broadcast command
+    // that a user wants to clear their strokes.
     io.emit("clear-user-broadcast", { userId });
   });
 

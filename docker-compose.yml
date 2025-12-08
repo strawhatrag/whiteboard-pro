@@ -2,39 +2,32 @@ version: "3.9"
 
 services:
   # 1. THE LOAD BALANCER / ENTRY POINT
-  # Clients connect to this service on port 80.
   nginx:
     image: nginx:latest
     container_name: nginx-lb
     ports:
-      - "80:80" # Exposed port to the outside world
+      - "80:80"
     volumes:
-      # Mount the NGINX config file to override the default settings
+      # Mount the NGINX config file
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      # Ensure the apps are up before the load balancer starts routing
       - app1
       - app2
       - app3
 
   # 2. THE MESSAGE BROKER / STATE SYNCHRONIZER
-  # Used by the Socket.IO Redis Adapter to sync events across app nodes.
   redis:
     image: redis:7-alpine
     container_name: redis
-    # Port 6379 is not exposed to the host, as only the app containers need to talk to it.
 
-  # 3. NODE.JS APPLICATION NODES (The Whiteboard Servers)
-  # Three identical instances running the server.js code.
+  # 3. NODE.JS APPLICATION NODES
   app1:
-    build: . # Build from the local Dockerfile
+    build: .
     container_name: whiteboard-app-1
     environment:
-      # This hostname resolves to the 'redis' service inside the Docker network
       - REDIS_HOST=redis
     depends_on:
       - redis
-    # Expose port 3000 internally so NGINX can reach it.
     expose:
       - "3000"
 
@@ -59,18 +52,15 @@ services:
       - "3000"
 
   # 4. MONITORING TOOL
-  # cAdvisor provides resource usage statistics for all containers.
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
     ports:
-      - "8080:8080" # Access the cAdvisor UI on host:8080
+      - "8080:8080"
     volumes:
-      # Required volumes for cAdvisor to inspect the Docker host and containers
       - /:/rootfs:ro
       - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
     privileged: true
-    # Restart policy is useful if the monitoring container crashes
     restart: always
