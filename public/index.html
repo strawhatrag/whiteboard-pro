@@ -1,108 +1,159 @@
-<script src="/socket.io/socket.io.js"></script>
-<script>
-  const canvas = document.getElementById("board");
-  const ctx = canvas.getContext("2d");
-  const socket = io({
-    transports: ['websocket']
-  });
+<!DOCTYPE html>
+<html>
 
-  const colorPicker = document.getElementById("colorPicker");
-  const clearMineBtn = document.getElementById("clearMineBtn");
-  const clearAllBtn = document.getElementById("clearAllBtn");
-  const userLabel = document.getElementById("userLabel");
+<head>
+  <title>Distributed Whiteboard</title>
+  <style>
+    /* Styles to make the board and controls visible */
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #f0f0f0;
+    }
 
-  function resizeCanvas() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-  }
-  resizeCanvas();
-  window.addEventListener("resize", resizeCanvas);
+    #board {
+      display: block;
+      background-color: white;
+      border: 1px solid #ccc;
+    }
 
-  let drawing = false;
-  let color = colorPicker.value;
-  let myUserId = null;
+    .controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    }
 
-  // ===== SESSION USER ID (PER TAB) =====
-  myUserId = sessionStorage.getItem("whiteboardSessionUserId");
-  if (!myUserId) {
-    myUserId = Math.random().toString(36).substring(2, 7).toUpperCase();
-    sessionStorage.setItem("whiteboardSessionUserId", myUserId);
-  }
+    .label {
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      margin-bottom: 5px;
+    }
+  </style>
+</head>
 
-  // --- REGISTRATION ---
-  socket.emit("register", { userId: myUserId });
+<body>
+  <canvas id="board"></canvas>
 
-  // Server sends back confirmation
-  socket.on("user-info", (info) => {
-    myUserId = info.userId;
-    userLabel.textContent = `You: ${myUserId}`;
-  });
+  <div class="controls">
+    <div class="label" id="userLabel">Loading User...</div>
+    <label for="colorPicker" class="label">Color:</label>
+    <input type="color" id="colorPicker" value="#000000"><br><br>
+    <button id="clearAllBtn">Clear All</button>
+    <button id="clearMineBtn">Clear My Strokes</button>
+  </div>
 
-  // CRITICAL: Received entire history on connection from Redis
-  socket.on("init-board", (strokes) => {
-    console.log(`Board initialized with ${strokes.length} persisted strokes.`);
-    ctx.clearRect(0, 0, canvas.width, canvas.height); // Start clean
-    strokes.forEach((s) => drawPoint(s.x, s.y, s.color));
-  });
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const canvas = document.getElementById("board");
+    const ctx = canvas.getContext("2d");
+    const socket = io({
+      transports: ['websocket']
+    });
 
-  colorPicker.addEventListener("change", (e) => {
-    color = e.target.value;
-  });
+    const colorPicker = document.getElementById("colorPicker");
+    const clearMineBtn = document.getElementById("clearMineBtn");
+    const clearAllBtn = document.getElementById("clearAllBtn");
+    const userLabel = document.getElementById("userLabel");
 
-  // ✅ CLEAR ONLY MY STROKES (Server handles filtering against persistent store)
-  clearMineBtn.addEventListener("click", () => {
-    socket.emit("clear-mine");
-  });
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
 
-  // ✅ CLEAR EVERYONE (Server deletes the persistent store)
-  clearAllBtn.addEventListener("click", () => {
-    socket.emit("clear-all");
-  });
+    let drawing = false;
+    let color = colorPicker.value;
+    let myUserId = null;
 
-  // --- DRAWING LISTENERS ---
-  canvas.addEventListener("mousedown", () => (drawing = true));
-  canvas.addEventListener("mouseup", () => (drawing = false));
-  canvas.addEventListener("mouseleave", () => (drawing = false));
-  canvas.addEventListener("mousemove", draw);
+    // ===== SESSION USER ID (PER TAB) =====
+    myUserId = sessionStorage.getItem("whiteboardSessionUserId");
+    if (!myUserId) {
+      myUserId = Math.random().toString(36).substring(2, 7).toUpperCase();
+      sessionStorage.setItem("whiteboardSessionUserId", myUserId);
+    }
 
-  function draw(e) {
-    if (!drawing) return;
+    // --- REGISTRATION ---
+    socket.emit("register", { userId: myUserId });
 
-    const x = e.clientX;
-    const y = e.clientY;
+    // Server sends back confirmation
+    socket.on("user-info", (info) => {
+      myUserId = info.userId;
+      userLabel.textContent = `You: ${myUserId}`;
+    });
 
-    const data = { x, y, color }; // userId is added by the server
+    // CRITICAL: Received entire history on connection from Redis
+    socket.on("init-board", (strokes) => {
+      console.log(`Board initialized with ${strokes.length} persisted strokes.`);
+      ctx.clearRect(0, 0, canvas.width, canvas.height); // Start clean
+      strokes.forEach((s) => drawPoint(s.x, s.y, s.color));
+    });
 
-    // 1. Draw LOCALLY first for zero-latency feedback
-    drawPoint(x, y, color);
+    colorPicker.addEventListener("change", (e) => {
+      color = e.target.value;
+    });
 
-    // 2. Send draw data to the server for persistence and broadcast
-    socket.emit("draw", data);
-  }
+    // CLEAR ONLY MY STROKES 
+    clearMineBtn.addEventListener("click", () => {
+      socket.emit("clear-mine");
+    });
 
-  // --- SERVER EVENTS ---
+    // CLEAR EVERYONE 
+    clearAllBtn.addEventListener("click", () => {
+      socket.emit("clear-all");
+    });
 
-  // Received draw events from OTHER users
-  socket.on("draw", (data) => {
-    drawPoint(data.x, data.y, data.color);
-  });
+    // --- DRAWING LISTENERS ---
+    canvas.addEventListener("mousedown", () => (drawing = true));
+    canvas.addEventListener("mouseup", () => (drawing = false));
+    canvas.addEventListener("mouseleave", () => (drawing = false));
+    canvas.addEventListener("mousemove", draw);
 
-  // Server tells all clients to clear the canvas
-  socket.on("clear-all", () => {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  });
+    function draw(e) {
+      if (!drawing) return;
 
-  // CRITICAL: Server tells everyone to clear and redraw the filtered state
-  socket.on("reset-board", (strokes) => {
-    console.log(`Board reset, ${strokes.length} strokes redrawn from persistent store.`);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    strokes.forEach((s) => drawPoint(s.x, s.y, s.color));
-  });
+      const x = e.clientX;
+      const y = e.clientY;
 
-  function drawPoint(x, y, color) {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(x, y, 4, 0, Math.PI * 2);
-    ctx.fill();
-  }
-</script>
+      const data = { x, y, color }; // userId is added by the server
+
+      // 1. Draw LOCALLY first for zero-latency feedback
+      drawPoint(x, y, color);
+
+      // 2. Send draw data to the server for persistence and broadcast
+      socket.emit("draw", data);
+    }
+
+    // --- SERVER EVENTS ---
+
+    // Received draw events from OTHER users
+    socket.on("draw", (data) => {
+      drawPoint(data.x, data.y, data.color);
+    });
+
+    // Server tells all clients to clear the canvas
+    socket.on("clear-all", () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    });
+
+    // CRITICAL: Server tells everyone to clear and redraw the filtered state
+    socket.on("reset-board", (strokes) => {
+      console.log(`Board reset, ${strokes.length} strokes redrawn from persistent store.`);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      strokes.forEach((s) => drawPoint(s.x, s.y, s.color));
+    });
+
+    function drawPoint(x, y, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  </script>
+</body>
+
+</html>
